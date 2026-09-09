@@ -1,0 +1,52 @@
+name: Encrypted signed IPA upload
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: mememash-ipa-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: macos-26
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decrypt signed IPA
+        env:
+          PAYLOAD_PASSWORD: ${{ secrets.PAYLOAD_PASSWORD }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 \
+            -in signed.ipa.enc \
+            -out "$RUNNER_TEMP/MemeMash.ipa" \
+            -pass env:PAYLOAD_PASSWORD
+
+      - name: Install App Store Connect key
+        env:
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p "$HOME/private_keys"
+          printf '%s' "$ASC_PRIVATE_KEY_BASE64" | base64 --decode \
+            > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app \
+            -f "$RUNNER_TEMP/MemeMash.ipa" \
+            -t ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/MemeMash.ipa"
+          rm -rf "$HOME/private_keys"

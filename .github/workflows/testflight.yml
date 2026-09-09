@@ -1,16 +1,16 @@
-name: Encrypted iOS TestFlight build
+name: Encrypted iOS unsigned build
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: mememash-testflight
+  group: mememash-unsigned-build
   cancel-in-progress: true
 
 jobs:
-  build-upload:
+  build:
     runs-on: macos-26
-    timeout-minutes: 35
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -34,80 +34,46 @@ jobs:
             -o "$RUNNER_TEMP/studio-tests"
           "$RUNNER_TEMP/studio-tests"
 
-      - name: Build and launch iPhone simulator
+      - name: Compile unsigned iPhone app
         working-directory: source
-        run: bash tooling/simulator-smoke.sh
-
-      - name: Install App Store Connect key
-        env:
-          ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-        run: |
-          mkdir -p "$HOME/private_keys"
-          printf '%s' "$ASC_PRIVATE_KEY_BASE64" | base64 --decode \
-            > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-
-      - name: Archive with Apple automatic signing
-        working-directory: source
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 12))
-          xcodebuild archive \
+          xcodebuild build \
             -project MemeMash.xcodeproj \
             -scheme MemeMash \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/MemeMash.xcarchive" \
-            CODE_SIGN_STYLE=Automatic \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM=VUPS57Y23P \
             PRODUCT_BUNDLE_IDENTIFIER=com.miaoyong.MemeMash \
-            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+            MARKETING_VERSION=1.2 \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+          test -d "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/MemeMash.app"
 
-      - name: Export IPA
+      - name: Encrypt unsigned app
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          PAYLOAD_PASSWORD: ${{ secrets.PAYLOAD_PASSWORD }}
         run: |
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>method</key><string>app-store-connect</string>
-            <key>signingStyle</key><string>automatic</string>
-            <key>teamID</key><string>VUPS57Y23P</string>
-            <key>uploadSymbols</key><true/>
-            <key>stripSwiftSymbols</key><true/>
-          </dict></plist>
-          PLIST
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/MemeMash.xcarchive" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          tar -czf "$RUNNER_TEMP/unsigned-app.tar.gz" \
+            -C "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" MemeMash.app
+          openssl enc -aes-256-cbc -salt -pbkdf2 \
+            -in "$RUNNER_TEMP/unsigned-app.tar.gz" \
+            -out unsigned-app.tar.gz.enc \
+            -pass env:PAYLOAD_PASSWORD
 
-      - name: Upload to TestFlight
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-        run: |
-          xcrun altool --upload-app \
-            -f "$RUNNER_TEMP/export/MemeMash.ipa" \
-            -t ios \
-            --apiKey "$ASC_KEY_ID" \
-            --apiIssuer "$ASC_ISSUER_ID"
+      - name: Store encrypted unsigned app
+        uses: actions/upload-artifact@v4
+        with:
+          name: mememash-unsigned-${{ github.run_number }}
+          path: unsigned-app.tar.gz.enc
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Remove decrypted material
         if: always()
         run: |
-          rm -rf source "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/MemeMash.xcarchive" "$RUNNER_TEMP/export"
-          rm -rf "$HOME/private_keys"
+          rm -rf source "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/DerivedData"
+          rm -f "$RUNNER_TEMP/unsigned-app.tar.gz" unsigned-app.tar.gz.enc
