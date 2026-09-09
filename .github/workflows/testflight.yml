@@ -1,0 +1,113 @@
+name: Encrypted iOS TestFlight build
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: mememash-testflight
+  cancel-in-progress: true
+
+jobs:
+  build-upload:
+    runs-on: macos-26
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decrypt source
+        env:
+          PAYLOAD_PASSWORD: ${{ secrets.PAYLOAD_PASSWORD }}
+        run: |
+          mkdir source
+          openssl enc -d -aes-256-cbc -pbkdf2 \
+            -in payload.tar.gz.enc \
+            -out "$RUNNER_TEMP/source.tar.gz" \
+            -pass env:PAYLOAD_PASSWORD
+          tar -xzf "$RUNNER_TEMP/source.tar.gz" -C source
+
+      - name: Test studio recipes and gesture stages
+        working-directory: source
+        run: |
+          swiftc MemeMash/Models/StudioDocument.swift Tests/StudioDocumentTests.swift \
+            -o "$RUNNER_TEMP/studio-tests"
+          "$RUNNER_TEMP/studio-tests"
+
+      - name: Build and launch iPhone simulator
+        working-directory: source
+        run: bash tooling/simulator-smoke.sh
+
+      - name: Install App Store Connect key
+        env:
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p "$HOME/private_keys"
+          printf '%s' "$ASC_PRIVATE_KEY_BASE64" | base64 --decode \
+            > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Archive with Apple automatic signing
+        working-directory: source
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 12))
+          xcodebuild archive \
+            -project MemeMash.xcodeproj \
+            -scheme MemeMash \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/MemeMash.xcarchive" \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM=VUPS57Y23P \
+            PRODUCT_BUNDLE_IDENTIFIER=com.miaoyong.MemeMash \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Export IPA
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>VUPS57Y23P</string>
+            <key>uploadSymbols</key><true/>
+            <key>stripSwiftSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/MemeMash.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app \
+            -f "$RUNNER_TEMP/export/MemeMash.ipa" \
+            -t ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Remove decrypted material
+        if: always()
+        run: |
+          rm -rf source "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/MemeMash.xcarchive" "$RUNNER_TEMP/export"
+          rm -rf "$HOME/private_keys"
