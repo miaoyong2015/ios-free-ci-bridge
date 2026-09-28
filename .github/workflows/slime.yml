@@ -97,17 +97,18 @@ jobs:
             xcrun simctl io $UDID screenshot "$OUT/shots/$name.png" > /dev/null 2>&1
           }
           ZH=(-AppleLanguages "(zh-Hans)" -AppleLocale zh_CN)
-          shot 00-onboarding 6 "${ZH[@]}" -tab jelly -jelly melon.crimson
+          EN=(-AppleLanguages "(en)" -AppleLocale en_US)
           K=-skipOnboarding
-          shot 01-jelly-rest 6 "${ZH[@]}" $K -tab jelly -jelly melon.crimson
-          shot 02-jelly-demo 5.2 "${ZH[@]}" $K -tab jelly -jelly melon.crimson -jellyDemo
-          shot 03-mochi-demo 5.2 "${ZH[@]}" $K -tab jelly -jelly mochi.milk -jellyDemo
-          shot 04-slime 6 "${ZH[@]}" $K -tab slime -slime classic
-          shot 05-paywall 6 "${ZH[@]}" $K -tab jelly -jelly melon.crimson -showPaywall
-          shot 06-en-jelly 6 $K -tab jelly -jelly melon.crimson -AppleLanguages "(en)" -AppleLocale en_US
-          shot 07-en-paywall 6 $K -tab jelly -showPaywall -AppleLanguages "(en)" -AppleLocale en_US
-          shot 08-pudding 6 "${ZH[@]}" $K -tab jelly -jelly pudding.caramel -jellyDemo
-          shot 09-en-onboarding 6 -tab jelly -AppleLanguages "(en)" -AppleLocale en_US
+          shot 00-slab-hint 6 "${ZH[@]}"
+          shot 01-slab-rest 6 "${ZH[@]}" $K
+          shot 02-slab-demo 6 "${ZH[@]}" $K -slabDemo
+          shot 03-cloud-demo 6 "${ZH[@]}" $K -slabDemo -slabTexture cloud
+          shot 04-jelly 6 "${ZH[@]}" $K -tab jelly -jelly mochi.milk
+          shot 05-jelly-demo 5.2 "${ZH[@]}" $K -tab jelly -jelly melon.crimson -jellyDemo
+          shot 06-classic 6 "${ZH[@]}" $K -tab slime -slime classic
+          shot 07-paywall 6 "${ZH[@]}" $K -showPaywall
+          shot 08-en-slab 6 "${EN[@]}" $K -slabDemo
+          shot 09-en-paywall 6 "${EN[@]}" $K -showPaywall
           xcrun simctl spawn $UDID log show --last 3m --predicate 'process == "SlimeASMR"' > "$OUT/sim-app.log" 2>&1 || true
           ls "$OUT/shots" | wc -l | xargs echo "screenshots:"
 
