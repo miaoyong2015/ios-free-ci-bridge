@@ -9,6 +9,10 @@ on:
         description: "Archive and upload to TestFlight"
         type: boolean
         default: false
+      upload_only:
+        description: "Skip tests/screenshots (only when this exact source already passed)"
+        type: boolean
+        default: false
 
 concurrency:
   group: slime-build
@@ -57,6 +61,7 @@ jobs:
       - name: Unit tests
         working-directory: src
         run: |
+          if [ "${{ inputs.upload_only }}" = "true" ]; then echo "tests skipped (upload_only)"; echo 0 > "$OUT/test.exit"; exit 0; fi
           set +e
           xcodebuild test -project SlimeASMR.xcodeproj -scheme SlimeASMR \
             -destination "id=${{ steps.sim.outputs.udid }}" \
@@ -67,6 +72,7 @@ jobs:
           echo "$code" > "$OUT/test.exit"
 
       - name: Release build for simulator + screenshots
+        if: ${{ !inputs.upload_only }}
         working-directory: src
         run: |
           set +e
@@ -119,11 +125,13 @@ jobs:
           printf '%s' "$KEY_B64" | base64 --decode > ~/private_keys/AuthKey_$KEY_ID.p8
           BUILD=$((GITHUB_RUN_NUMBER + 10))
           echo "build number $BUILD" | tee "$OUT/build-number.txt"
+          # Unsigned archive: automatic signing would mint a new Development
+          # certificate on every fresh runner (the account is at its limit).
+          # Distribution signing happens at export with cloud-managed certs.
           xcodebuild archive -project SlimeASMR.xcodeproj -scheme SlimeASMR -configuration Release \
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/SlimeASMR.xcarchive" \
-            CURRENT_PROJECT_VERSION=$BUILD -allowProvisioningUpdates \
-            -authenticationKeyPath ~/private_keys/AuthKey_$KEY_ID.p8 \
-            -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" > "$OUT/archive.log" 2>&1
+            CURRENT_PROJECT_VERSION=$BUILD CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" > "$OUT/archive.log" 2>&1
           code=$?
           echo "archive exit $code"
           if [ $code -eq 0 ]; then
@@ -132,6 +140,8 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>VUPS57Y23P</string>
+            <key>signingStyle</key><string>automatic</string>
             <key>destination</key><string>upload</string>
             <key>uploadSymbols</key><true/>
           </dict></plist>
