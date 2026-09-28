@@ -1,0 +1,161 @@
+name: Slime encrypted build
+
+# Source, logs and screenshots are AES-encrypted; nothing readable is printed
+# to this public log except pass/fail lines.
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Archive and upload to TestFlight"
+        type: boolean
+        default: false
+
+concurrency:
+  group: slime-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      PW: ${{ secrets.SLIME_PAYLOAD_PASSWORD }}
+      OUT: ${{ github.workspace }}/out
+    steps:
+      - name: Fetch and decrypt source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$OUT" src
+          gh release download slime-payload -R "$GITHUB_REPOSITORY" -p payload.tar.gz.enc -D "$RUNNER_TEMP"
+          openssl enc -d -aes-256-cbc -pbkdf2 -in "$RUNNER_TEMP/payload.tar.gz.enc" \
+            -out "$RUNNER_TEMP/src.tar.gz" -pass env:PW
+          tar -xzf "$RUNNER_TEMP/src.tar.gz" -C src
+          echo "source ok"
+
+      - name: Generate project
+        working-directory: src
+        run: |
+          brew install xcodegen >/dev/null 2>&1
+          xcodegen generate > "$OUT/xcodegen.log" 2>&1 && echo "xcodegen ok"
+          xcodebuild -version > "$OUT/xcode-version.txt"
+
+      - name: Pick simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available --json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          devs = [d for v in data['devices'].values() for d in v if d['isAvailable'] and d['name'].startswith('iPhone')]
+          pro = [d for d in devs if d['name'].endswith('Pro')]
+          print((pro or devs)[-1]['udid'] if devs else '')")
+          [ -n "$UDID" ] || { echo "no simulator"; exit 1; }
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Unit tests
+        working-directory: src
+        run: |
+          set +e
+          xcodebuild test -project SlimeASMR.xcodeproj -scheme SlimeASMR \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM= > "$OUT/test.log" 2>&1
+          code=$?
+          grep -E "Executed [0-9]+ tests" "$OUT/test.log" | tail -1 | sed -E 's/.*(Executed [0-9]+ tests, with [0-9]+ failures).*/\1/'
+          echo "test exit $code"
+          echo "$code" > "$OUT/test.exit"
+
+      - name: Release build for simulator + screenshots
+        working-directory: src
+        run: |
+          set +e
+          xcodebuild -project SlimeASMR.xcodeproj -scheme SlimeASMR -sdk iphonesimulator \
+            -configuration Release -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO build > "$OUT/sim-build.log" 2>&1
+          code=$?
+          echo "sim release build exit $code"
+          [ $code -eq 0 ] || exit 0
+          UDID=${{ steps.sim.outputs.udid }}
+          B=com.rrix.slimeasmr
+          xcrun simctl boot $UDID || true
+          xcrun simctl bootstatus $UDID -b > /dev/null
+          xcrun simctl install $UDID "$(find $RUNNER_TEMP/dd/Build/Products -name SlimeASMR.app | head -1)"
+          xcrun simctl status_bar $UDID override --time "9:41" --batteryState charged --batteryLevel 100 || true
+          mkdir -p "$OUT/shots"
+          shot() {  # name, wait, launch args...
+            local name=$1 wait=$2; shift 2
+            xcrun simctl terminate $UDID $B 2>/dev/null || true
+            xcrun simctl launch $UDID $B "$@" > /dev/null
+            sleep $wait
+            xcrun simctl io $UDID screenshot "$OUT/shots/$name.png" > /dev/null 2>&1
+          }
+          shot 01-jelly-rest 7 -tab jelly -jelly melon.crimson
+          shot 02-jelly-demo 5.2 -tab jelly -jelly melon.crimson -jellyDemo
+          shot 03-mochi-demo 5.2 -tab jelly -jelly mochi.milk -jellyDemo
+          shot 04-slime 6 -tab slime -slime classic
+          shot 05-paywall 6 -tab jelly -jelly melon.crimson -showPaywall
+          shot 06-en-jelly 6 -tab jelly -jelly melon.crimson -AppleLanguages "(en)" -AppleLocale en_US
+          shot 07-en-paywall 6 -tab jelly -showPaywall -AppleLanguages "(en)" -AppleLocale en_US
+          shot 08-trial 7 -tab jelly -jelly cube.grape
+          xcrun simctl spawn $UDID log show --last 3m --predicate 'process == "SlimeASMR"' > "$OUT/sim-app.log" 2>&1 || true
+          ls "$OUT/shots" | wc -l | xargs echo "screenshots:"
+
+      - name: Archive and upload to TestFlight
+        if: ${{ inputs.upload }}
+        working-directory: src
+        env:
+          KEY_B64: ${{ secrets.SLIME_ASC_KEY_B64 }}
+          KEY_ID: ${{ secrets.SLIME_ASC_KEY_ID }}
+          ISSUER: ${{ secrets.SLIME_ASC_ISSUER_ID }}
+        run: |
+          set +e
+          test "$(cat $OUT/test.exit)" = "0" || { echo "tests failed, not uploading"; exit 1; }
+          mkdir -p ~/private_keys
+          printf '%s' "$KEY_B64" | base64 --decode > ~/private_keys/AuthKey_$KEY_ID.p8
+          BUILD=$((GITHUB_RUN_NUMBER + 10))
+          echo "build number $BUILD" | tee "$OUT/build-number.txt"
+          xcodebuild archive -project SlimeASMR.xcodeproj -scheme SlimeASMR -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/SlimeASMR.xcarchive" \
+            CURRENT_PROJECT_VERSION=$BUILD -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_$KEY_ID.p8 \
+            -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" > "$OUT/archive.log" 2>&1
+          code=$?
+          echo "archive exit $code"
+          if [ $code -eq 0 ]; then
+            cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+            xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/SlimeASMR.xcarchive" \
+              -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -allowProvisioningUpdates \
+              -authenticationKeyPath ~/private_keys/AuthKey_$KEY_ID.p8 \
+              -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" > "$OUT/export.log" 2>&1
+            code=$?
+            echo "export/upload exit $code"
+          fi
+          rm -rf ~/private_keys
+          echo "$code" > "$OUT/upload.exit"
+          exit $code
+
+      - name: Encrypt results
+        if: always()
+        run: |
+          tar -czf "$RUNNER_TEMP/out.tar.gz" -C "$OUT" .
+          openssl enc -aes-256-cbc -salt -pbkdf2 -in "$RUNNER_TEMP/out.tar.gz" -out results.tar.gz.enc -pass env:PW
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: slime-results
+          path: results.tar.gz.enc
+          retention-days: 3
+          compression-level: 0
+
+      - name: Fail if tests failed
+        run: test "$(cat $OUT/test.exit)" = "0"
