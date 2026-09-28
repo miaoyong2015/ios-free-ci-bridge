@@ -100,15 +100,15 @@ jobs:
           EN=(-AppleLanguages "(en)" -AppleLocale en_US)
           K=-skipOnboarding
           shot 00-slab-hint 6 "${ZH[@]}"
-          shot 01-slab-rest 6 "${ZH[@]}" $K
-          shot 02-slab-demo 6 "${ZH[@]}" $K -slabDemo
-          shot 03-cloud-demo 6 "${ZH[@]}" $K -slabDemo -slabTexture cloud
+          shot 01-slab-rest 6 "${ZH[@]}" $K -tab slab
+          shot 02-slab-demo 6 "${ZH[@]}" $K -tab slab -slabDemo
+          shot 03-cloud-demo 6 "${ZH[@]}" $K -tab slab -slabDemo -slabTexture cloud
           shot 04-jelly 6 "${ZH[@]}" $K -tab jelly -jelly mochi.milk
           shot 05-jelly-demo 5.2 "${ZH[@]}" $K -tab jelly -jelly melon.crimson -jellyDemo
           shot 06-classic 6 "${ZH[@]}" $K -tab slime -slime classic
-          shot 07-paywall 6 "${ZH[@]}" $K -showPaywall
-          shot 08-en-slab 6 "${EN[@]}" $K -slabDemo
-          shot 09-en-paywall 6 "${EN[@]}" $K -showPaywall
+          shot 07-paywall 6 "${ZH[@]}" $K -tab slab -showPaywall
+          shot 08-en-slab 6 "${EN[@]}" $K -tab slab -slabDemo
+          shot 09-en-paywall 6 "${EN[@]}" $K -tab slab -showPaywall
           xcrun simctl spawn $UDID log show --last 3m --predicate 'process == "SlimeASMR"' > "$OUT/sim-app.log" 2>&1 || true
           ls "$OUT/shots" | wc -l | xargs echo "screenshots:"
 
