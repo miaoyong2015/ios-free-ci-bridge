@@ -120,8 +120,11 @@ jobs:
           echo "build number $BUILD" | tee "$OUT/build-number.txt"
           xcodebuild archive -project TapCourt.xcodeproj -scheme TapCourt -configuration Release \
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/TapCourt.xcarchive" \
-            CURRENT_PROJECT_VERSION=$BUILD CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" > "$OUT/archive.log" 2>&1
+            CURRENT_PROJECT_VERSION=$BUILD CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO PROVISIONING_PROFILE_SPECIFIER= \
+            > "$OUT/archive.log" 2>&1
+          # Ad-hoc signature keeps the HealthKit entitlement in the watch app; export re-signs for distribution.
+          codesign -d --entitlements - "$RUNNER_TEMP/TapCourt.xcarchive/Products/Applications/TapCourt.app/Watch/TapCourtWatch.app" 2>&1 | grep -c healthkit | xargs echo "watch healthkit entitlements:"
           code=$?
           echo "archive exit $code"
           if [ $code -eq 0 ]; then
