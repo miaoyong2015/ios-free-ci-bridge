@@ -12,6 +12,10 @@ on:
         description: "Take App Store screenshots"
         type: boolean
         default: true
+      tests:
+        description: "Run iPhone + Watch UI tests and StoreKit tests"
+        type: boolean
+        default: false
 
 concurrency:
   group: tapcourt-build
@@ -49,6 +53,35 @@ jobs:
           tail -1 "$OUT/engine.log"
           echo "engine exit $code"
           echo "$code" > "$OUT/test.exit"
+
+      - name: UI tests (iPhone, StoreKit, Watch, sync)
+        if: ${{ inputs.tests }}
+        working-directory: src
+        run: |
+          set +e
+          read IPHONE WATCH <<< $(xcrun simctl list pairs --json | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['pairs']
+          ps = [(p['phone'], p['watch']) for p in d.values() if p['phone']['state'] != 'Unavailable']
+          best = [x for x in ps if 'Pro Max' in x[0]['name']] or ps
+          print(best[-1][0]['udid'], best[-1][1]['udid']) if best else print('none none')")
+          echo "pair phone $IPHONE watch $WATCH"
+          summary() { xcrun xcresulttool get test-results summary --path "$1" --compact 2>/dev/null | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          print('$2', 'result', d.get('result'), 'passed', d.get('passedTests'), 'failed', d.get('failedTests'), 'skipped', d.get('skippedTests'))
+          for f in d.get('testFailures', []): print('  FAIL', f.get('testName'), '-', (f.get('failureText') or '')[:200])"; }
+          xcodebuild test -project TapCourt.xcodeproj -scheme TapCourt -destination "id=$IPHONE" \
+            -derivedDataPath "$RUNNER_TEMP/tdd" -resultBundlePath "$OUT/phone.xcresult" CODE_SIGNING_ALLOWED=NO > "$OUT/test-phone.log" 2>&1
+          echo "phone tests exit $?"; summary "$OUT/phone.xcresult" phone
+          xcodebuild test -project TapCourt.xcodeproj -scheme TapCourtWatch -destination "id=$WATCH" \
+            -derivedDataPath "$RUNNER_TEMP/tdd" -resultBundlePath "$OUT/watch.xcresult" CODE_SIGNING_ALLOWED=NO > "$OUT/test-watch.log" 2>&1
+          echo "watch tests exit $?"; summary "$OUT/watch.xcresult" watch
+          TEST_RUNNER_TC_EXPECT_WATCH=1 xcodebuild test -project TapCourt.xcodeproj -scheme TapCourt -destination "id=$IPHONE" \
+            -derivedDataPath "$RUNNER_TEMP/tdd" -resultBundlePath "$OUT/sync.xcresult" CODE_SIGNING_ALLOWED=NO \
+            -only-testing:TapCourtUITests/TapCourtUITests/testWatchMatchesSyncToPhone > "$OUT/test-sync.log" 2>&1
+          echo "sync test exit $?"; summary "$OUT/sync.xcresult" sync
+          exit 0
 
       - name: Simulator build and screenshots
         if: ${{ inputs.shots }}
