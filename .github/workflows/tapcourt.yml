@@ -16,6 +16,10 @@ on:
         description: "Run iPhone + Watch UI tests and StoreKit tests"
         type: boolean
         default: false
+      videos:
+        description: "Record demo screen videos"
+        type: boolean
+        default: false
       suite:
         description: "Test suite: all or watch"
         type: string
@@ -163,6 +167,49 @@ jobs:
             fi
           done
           ls "$OUT/shots" | wc -l | xargs echo "screenshots:"
+
+      - name: Record demo videos
+        if: ${{ inputs.videos }}
+        working-directory: src
+        run: |
+          set +e
+          read IPHONE WATCH <<< $(xcrun simctl list devices available --json | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          devs = [x for v in d['devices'].values() for x in v if x['isAvailable']]
+          ph = [x for x in devs if x['name'].startswith('iPhone') and 'Pro Max' in x['name']] or [x for x in devs if x['name'].startswith('iPhone')]
+          w = [x for x in devs if x['name'].startswith('Apple Watch') and '46mm' in x['name']] or [x for x in devs if x['name'].startswith('Apple Watch')]
+          print(ph[-1]['udid'], w[-1]['udid'] if w else 'none')")
+          xcodebuild build -project TapCourt.xcodeproj -scheme TapCourt -configuration Debug -destination "id=$IPHONE" \
+            -derivedDataPath "$RUNNER_TEMP/vdd" CODE_SIGNING_ALLOWED=NO > "$OUT/video-build.log" 2>&1
+          echo "video build exit $?"
+          P="$RUNNER_TEMP/vdd/Build/Products"; B=com.lobster.smashly
+          xcrun simctl boot $IPHONE || true; xcrun simctl bootstatus $IPHONE -b > /dev/null
+          xcrun simctl install $IPHONE "$P/Debug-iphonesimulator/TapCourt.app"
+          xcrun simctl status_bar $IPHONE override --time "9:41" --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 || true
+          mkdir -p "$OUT/videos"
+          rec() {  # device bundle name seconds args...
+            local dev=$1 bid=$2 name=$3 secs=$4; shift 4
+            xcrun simctl terminate $dev $bid 2>/dev/null
+            xcrun simctl launch $dev $bid "$@" > /dev/null; sleep 4
+            xcrun simctl terminate $dev $bid 2>/dev/null
+            xcrun simctl io $dev recordVideo --codec=h264 --force "$OUT/videos/$name.mp4" > /dev/null 2>&1 &
+            local pid=$!; sleep 1
+            xcrun simctl launch $dev $bid "$@" > /dev/null
+            sleep $secs; kill -INT $pid; wait $pid 2>/dev/null
+          }
+          EN=(-AppleLanguages "(en)" -AppleLocale en_US -demoPro)
+          rec $IPHONE $B v1_pickleball 16 "${EN[@]}" -demoAutoplay pickleball
+          rec $IPHONE $B v2_padel 14 "${EN[@]}" -demoAutoplay padel
+          rec $IPHONE $B v3_serve 15 "${EN[@]}" -demoAutoplay serve
+          rec $IPHONE $B v4_badminton 12 "${EN[@]}" -demoAutoplay badminton
+          rec $IPHONE $B v6_history 6 "${EN[@]}" -demoHistory -demoHistoryPage
+          if [ "$WATCH" != "none" ]; then
+            xcrun simctl boot $WATCH || true; xcrun simctl bootstatus $WATCH -b > /dev/null
+            xcrun simctl install $WATCH "$P/Debug-watchsimulator/TapCourtWatch.app"
+            rec $WATCH $B.watchkitapp v5_watch 16 "${EN[@]}" -demoAutoplay pickleball
+          fi
+          ls -la "$OUT/videos" | tail -8; ls "$OUT/videos" | wc -l | xargs echo "videos:"
 
       - name: Archive and upload to TestFlight
         if: ${{ inputs.upload }}
