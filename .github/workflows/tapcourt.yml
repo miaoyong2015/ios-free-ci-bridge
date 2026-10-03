@@ -16,15 +16,19 @@ on:
         description: "Run iPhone + Watch UI tests and StoreKit tests"
         type: boolean
         default: false
+      suite:
+        description: "Test suite: all or watch"
+        type: string
+        default: all
 
 concurrency:
-  group: tapcourt-build
+  group: tapcourt-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 180
     permissions:
       contents: read
     env:
@@ -92,8 +96,10 @@ jobs:
               -derivedDataPath "$DD" -resultBundlePath "$OUT/$name.xcresult" "$@" > "$OUT/test-$name.log" 2>&1
             echo "$name tests exit $?"; summary "$OUT/$name.xcresult" $name
           }
-          run storekit TapCourt $SKPHONE -only-testing:TapCourtTests
-          run phone TapCourt $IPHONE -only-testing:TapCourtUITests
+          if [ "${{ inputs.suite }}" != "watch" ]; then
+            run storekit TapCourt $SKPHONE -only-testing:TapCourtTests
+            run phone TapCourt $IPHONE -only-testing:TapCourtUITests
+          fi
           run watch TapCourtWatch $WATCH
           export TEST_RUNNER_TC_EXPECT_WATCH=1
           run sync TapCourt $IPHONE -only-testing:TapCourtUITests/TapCourtUITests/testWatchMatchesSyncToPhone
