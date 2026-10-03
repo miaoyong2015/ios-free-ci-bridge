@@ -97,6 +97,11 @@ jobs:
           run watch TapCourtWatch $WATCH
           export TEST_RUNNER_TC_EXPECT_WATCH=1
           run sync TapCourt $IPHONE -only-testing:TapCourtUITests/TapCourtUITests/testWatchMatchesSyncToPhone
+          for d in $WATCH $IPHONE; do
+            xcrun simctl spawn $d log show --last 40m --style compact \
+              --predicate 'subsystem == "com.lobster.smashly" OR process == "wcd" OR (process CONTAINS "TapCourt" AND eventMessage CONTAINS[c] "WC")' > "$OUT/syslog-$d.txt" 2>&1
+          done
+          grep -h "com.lobster.smashly" "$OUT"/syslog-*.txt | grep -E "activation|flush|transfer|received" | tail -20
           exit 0
 
       - name: Simulator build and screenshots
