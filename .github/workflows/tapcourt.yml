@@ -59,28 +59,44 @@ jobs:
         working-directory: src
         run: |
           set +e
-          read IPHONE WATCH <<< $(xcrun simctl list pairs --json | python3 -c "
+          read PAIR IPHONE WATCH SKPHONE <<< $(xcrun simctl list --json | python3 -c "
           import json, sys
-          d = json.load(sys.stdin)['pairs']
-          ps = [(p['phone'], p['watch']) for p in d.values() if p['phone']['state'] != 'Unavailable']
-          best = [x for x in ps if 'Pro Max' in x[0]['name']] or ps
-          print(best[-1][0]['udid'], best[-1][1]['udid']) if best else print('none none')")
-          echo "pair phone $IPHONE watch $WATCH"
+          d = json.load(sys.stdin)
+          pairs = [(k, p['phone'], p['watch']) for k, p in d['pairs'].items() if p['phone']['state'] != 'Unavailable']
+          best = [x for x in pairs if 'Pro Max' in x[1]['name']] or pairs
+          pid, ph, w = best[-1]
+          paired = {p['phone']['udid'] for p in d['pairs'].values()}
+          phones = [x for v in d['devices'].values() for x in v if x['isAvailable'] and x['name'].startswith('iPhone') and x['udid'] not in paired]
+          print(pid, ph['udid'], w['udid'], phones[-1]['udid'] if phones else ph['udid'])")
+          echo "pair phone $IPHONE watch $WATCH storekit-phone $SKPHONE"
+          for d in $IPHONE $WATCH $SKPHONE; do xcrun simctl boot $d 2>/dev/null; done
+          for d in $IPHONE $WATCH $SKPHONE; do xcrun simctl bootstatus $d -b > /dev/null; done
+          xcrun simctl pair_activate $PAIR 2>&1 | tail -1
           summary() { xcrun xcresulttool get test-results summary --path "$1" --compact 2>/dev/null | python3 -c "
           import json,sys
           d=json.load(sys.stdin)
           print('$2', 'result', d.get('result'), 'passed', d.get('passedTests'), 'failed', d.get('failedTests'), 'skipped', d.get('skippedTests'))
-          for f in d.get('testFailures', []): print('  FAIL', f.get('testName'), '-', (f.get('failureText') or '')[:200])"; }
-          xcodebuild test -project TapCourt.xcodeproj -scheme TapCourt -destination "id=$IPHONE" \
-            -derivedDataPath "$RUNNER_TEMP/tdd" -resultBundlePath "$OUT/phone.xcresult" CODE_SIGNING_ALLOWED=NO > "$OUT/test-phone.log" 2>&1
-          echo "phone tests exit $?"; summary "$OUT/phone.xcresult" phone
-          xcodebuild test -project TapCourt.xcodeproj -scheme TapCourtWatch -destination "id=$WATCH" \
-            -derivedDataPath "$RUNNER_TEMP/tdd" -resultBundlePath "$OUT/watch.xcresult" CODE_SIGNING_ALLOWED=NO > "$OUT/test-watch.log" 2>&1
-          echo "watch tests exit $?"; summary "$OUT/watch.xcresult" watch
-          TEST_RUNNER_TC_EXPECT_WATCH=1 xcodebuild test -project TapCourt.xcodeproj -scheme TapCourt -destination "id=$IPHONE" \
-            -derivedDataPath "$RUNNER_TEMP/tdd" -resultBundlePath "$OUT/sync.xcresult" CODE_SIGNING_ALLOWED=NO \
-            -only-testing:TapCourtUITests/TapCourtUITests/testWatchMatchesSyncToPhone > "$OUT/test-sync.log" 2>&1
-          echo "sync test exit $?"; summary "$OUT/sync.xcresult" sync
+          for f in d.get('testFailures', []): print('  FAIL', f.get('testName'), '-', (f.get('failureText') or '')[:240])"; }
+          DD="$RUNNER_TEMP/tdd"
+          xcodebuild build-for-testing -project TapCourt.xcodeproj -scheme TapCourt -destination "id=$IPHONE" -derivedDataPath "$DD" CODE_SIGNING_ALLOWED=NO > "$OUT/build-tests.log" 2>&1
+          echo "build-for-testing phone exit $?"
+          xcodebuild build-for-testing -project TapCourt.xcodeproj -scheme TapCourtWatch -destination "id=$WATCH" -derivedDataPath "$DD" CODE_SIGNING_ALLOWED=NO >> "$OUT/build-tests.log" 2>&1
+          echo "build-for-testing watch exit $?"
+          # Warm up the watch simulator: first app launch on a cold watch can exceed XCUITest's launch timeout.
+          xcrun simctl install $WATCH "$DD/Build/Products/Debug-watchsimulator/TapCourtWatch.app"
+          xcrun simctl launch $WATCH com.lobster.smashly.watchkitapp > /dev/null; sleep 25
+          xcrun simctl terminate $WATCH com.lobster.smashly.watchkitapp
+          run() {  # name scheme device extra...
+            local name=$1 scheme=$2 dev=$3; shift 3
+            xcodebuild test-without-building -project TapCourt.xcodeproj -scheme $scheme -destination "id=$dev" \
+              -derivedDataPath "$DD" -resultBundlePath "$OUT/$name.xcresult" "$@" > "$OUT/test-$name.log" 2>&1
+            echo "$name tests exit $?"; summary "$OUT/$name.xcresult" $name
+          }
+          run storekit TapCourt $SKPHONE -only-testing:TapCourtTests
+          run phone TapCourt $IPHONE -only-testing:TapCourtUITests
+          run watch TapCourtWatch $WATCH
+          export TEST_RUNNER_TC_EXPECT_WATCH=1
+          run sync TapCourt $IPHONE -only-testing:TapCourtUITests/TapCourtUITests/testWatchMatchesSyncToPhone
           exit 0
 
       - name: Simulator build and screenshots
